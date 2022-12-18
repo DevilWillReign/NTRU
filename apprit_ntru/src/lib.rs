@@ -7,6 +7,7 @@ use rand::distributions::Uniform;
 use std::borrow::BorrowMut;
 use std::collections::BTreeMap;
 use std::fmt::Display;
+// use std::time::Instant;
 
 pub struct NTRU<const P: i64, const Q: i64, const N:i64> {
     keys: Keys<Q>,
@@ -28,22 +29,20 @@ impl <const P: i64, const Q: i64, const N: i64> NTRU<P, Q, N> {
         let mut f = x_f.mul_scalar(P);
         f.insert(0, f.get(0) + 1);
         let g = x_g.mul_scalar(P);
-        print!("f: {}\ng: {}\n", f, g);
-        let h = Ring::<Q, N>::multiply_poly_mod(Poly::<Q>::invert_poly(f.clone(), Ring::<Q, N>::inv_poly()), g); 
+        let h = Ring::<Q, N>::multiply_poly_mod(&Poly::<Q>::invert_poly(&f, &Ring::<Q, N>::inv_poly()), &g);
         self.keys = Keys::from(h, f)
     }
 
-    pub fn encrypt(&self, m: Poly<Q>) -> Result<Poly<Q>, String> {
-        if self.keys != Keys::new() {
-            let r = Ring::<Q, N>::generate_n_poly();
-            return Ok(Ring::<Q, N>::multiply_poly_mod(r, self.keys.pub_key.clone()).add(m));
+    pub fn encrypt(&self, m: &Poly<Q>, r: &Poly<Q>, pub_key: &Poly<Q>) -> Result<Poly<Q>, String> {
+        if *pub_key != Poly::<Q>::new() {
+            return Ok(Ring::<Q, N>::multiply_poly_mod(&r, &pub_key).add(&m));
         }
         return Err(String::from("No keys generated"));
     }
 
-    pub fn decrypt(&self, c: Poly<Q>) -> Result<Poly<P>, String> {
-        if self.keys != Keys::new() {
-            return Ok(Poly::<P>::from(Ring::<Q, N>::multiply_poly_mod(self.keys.priv_key.clone(), c).values))
+    pub fn decrypt(&self, c: &Poly<Q>, priv_key: &Poly<Q>) -> Result<Poly<P>, String> {
+        if *priv_key != Poly::<Q>::new() {
+            return Ok(Poly::<P>::from(Ring::<Q, N>::multiply_poly_mod(&priv_key, &c).values))
         }
         return Err(String::from("No keys generated"));
     }
@@ -89,12 +88,20 @@ impl <const Q: i64, const N: i64> Ring<Q, N> {
         a.rem_euclid(N)
     }
 
-    pub fn multiply_poly_mod(poly1: Poly<Q>, poly2: Poly<Q>) -> Poly<Q> {
+    pub fn multiply_poly_mod(poly1: &Poly<Q>, poly2: &Poly<Q>) -> Poly<Q> {
         let mut poly3 = Poly::new();
         for i in poly1.values.keys() {
             for j in poly2.values.keys() {
                 poly3.insert(Self::mod_n(*i+*j), poly3.get(Self::mod_n(*i+*j)) + poly1.get(Self::mod_n(*i)) * poly2.get(Self::mod_n(*j)));
             }
+        }
+        return poly3;
+    }
+
+    pub fn poly_mod(poly1: Poly<Q>) -> Poly<Q> {
+        let mut poly3 = Poly::new();
+        for i in poly1.values.keys() {
+            poly3.insert(Self::mod_n(*i), poly3.get(Self::mod_n(*i)) + poly1.get(Self::mod_n(*i)));
         }
         return poly3;
     }
@@ -178,7 +185,7 @@ impl <const Q: i64> Poly<Q> {
     pub fn div_scalar(&self, s: i64) -> Poly<Q> {
         let mut nmap = Self::new();
         for (k, v) in self.values.iter() {
-            nmap.insert(*k, *v / s);
+            nmap.insert(*k, Self::find_coeff(*v, s));
         }
         return nmap;
     }
@@ -202,7 +209,11 @@ impl <const Q: i64> Poly<Q> {
         return (a + (Q-1)/2).rem_euclid(Q) - (Q-1)/2
     }
 
-    pub fn add(&self, p: Self) -> Self {
+    fn mods_2p(a: i64, n: i64) -> i64 {
+        return (a + (n-1)/2).rem_euclid(n) - (n-1)/2
+    }
+
+    pub fn add(&self, p: &Self) -> Self {
         let mut nmap = Self::new();
         let mut iter1 = self.values.keys().map(|k| *k).into_iter().collect::<Vec<i64>>();
         iter1.append(p.values.keys().map(|k| *k).into_iter().collect::<Vec<i64>>().borrow_mut());
@@ -215,7 +226,7 @@ impl <const Q: i64> Poly<Q> {
         return nmap;
     }
 
-    pub fn sub(&self, p: Self) -> Self {
+    pub fn sub(&self, p: &Self) -> Self {
         let mut nmap = Self::new();
         let mut iter1 = self.values.keys().map(|k| *k).into_iter().collect::<Vec<i64>>();
         iter1.append(p.values.keys().map(|k| *k).into_iter().collect::<Vec<i64>>().borrow_mut());
@@ -235,7 +246,7 @@ impl <const Q: i64> Poly<Q> {
         }
     }
 
-    pub fn multiply_poly(&self, poly2: Self) -> Self {
+    pub fn multiply_poly(&self, poly2: &Self) -> Self {
         let mut poly3 = Self::new();
         for i in self.values.keys() {
             for j in poly2.values.keys() {
@@ -245,54 +256,108 @@ impl <const Q: i64> Poly<Q> {
         return poly3;
     }
 
-    pub fn find_coeff(r: i64, v: i64) -> i64 {
-        let mut i = 0;
-        while Self::mods(1) != Self::mods(v * i) {
-            i+=1;
+    pub fn inverse_int(a: i64) -> (i64, i64) {
+        let mut t = 0;
+        let mut newt = 1;
+        let mut r = Q;
+        let mut newr = a;
+
+        while newr != 0 {
+            let quotient = (r - Self::mods_2p(r, newr)) /newr;
+            (t, newt) = (newt, t - quotient * newt);
+            (r, newr) = (newr, r - quotient * newr);
         }
-        return i*r;
+        // if r > 1 {
+        //     println!("r: {}, gcd(a,Q): {}", r, Self::gcd(a, Q));
+        //     panic!("Cannot inverse");
+        // }
+
+        if t < 0 {
+            t += Q;
+        }
+        // println!("r mods Q: {}, a: {}, t: {}", Self::mods(r), a, Self::mods(r*t*a));
+        return (t, r)
     }
 
-    pub fn division_poly(p1: Self, p2: Self) -> (Self, Self) {
+    pub fn gcd(v: i64, n: i64) -> i64 {
+        let mut a = v;
+        let mut b = n; 
+        
+        while b != 0 {
+            let t = b;
+            b = Self::mods_2p(a,b);
+            a = t;
+        }
+        return a
+    }
+
+    pub fn find_coeff(div_coeff: i64, inv_coeff: i64) -> i64 {
+        // let now = Instant::now();
+        let (inv, r) = Self::inverse_int(inv_coeff);
+        // let c = Self::mods((inv*div_coeff) / Self::gcd(inv_coeff, Q));
+        // println!("div_coeff: {}, c: {}", div_coeff, c);
+        if r != 1 {
+            println!("{} {}", r, div_coeff);
+            return (inv*div_coeff) * Self::inverse_int(r).0;
+        }
+        // let elapsed_time = now.elapsed();
+        // println!("Running inverse_int() took {} seconds.", elapsed_time.as_nanos());
+        // let now = Instant::now();
+        // let mut i = 1;
+        // while 1 != Self::mods(i * inv_coeff) {
+        //     i += 1;
+        // }
+        // let elapsed_time = now.elapsed();
+        // println!("Running while took {} seconds.", elapsed_time.as_nanos());
+        // println!("inv: {}, i: {}", inv, i);
+        return inv * div_coeff;
+        // return i * div_coeff;
+    }
+
+    pub fn division_poly(p1: &Self, p2: &Self) -> (Self, Self) {
         let mut r = p1.clone();
         let mut quotient = Self::new();
         let p2d = p2.deg();
         let p2v = p2.get(p2d);
+
         while r.deg() >= p2d && r != Self::new() {
             let vv = Self::find_coeff(r.get(r.deg()), p2v);
             let v = Self::from_vec(vec![(r.deg()-p2d, vv)]);
-            r = r.sub(v.multiply_poly(p2.clone()));
-            quotient = quotient.add(v);
+            r = r.sub(&v.multiply_poly(&p2));
+            quotient = quotient.add(&v);
         }
         return (quotient, r)
     }
 
-    pub fn extended_gcd(a: Self, b: Self) -> (Self, Self, Self) {
+    pub fn extended_poly_gcd(a: &Self, b: &Self) -> (Self, Self, Self) {
         let mut old_s = Self::from_vec(vec![(0, 1)]);
         let mut old_r = a.clone();
         let mut s = Self::new();
         let mut r = b.clone();
         
         while r != Self::new() {
-            let (quotient,remainder) = Self::division_poly(old_r.clone(), r.clone());
+            let (quotient,remainder) = Self::division_poly(&old_r, &r);
             (old_r, r) = (r.clone(), remainder);
-            (old_s, s) = (s.clone(), old_s.sub(quotient.multiply_poly(s.clone())));
+            (old_s, s) = (s.clone(), old_s.sub(&quotient.multiply_poly(&s)));
         }
 
-        return (old_r.clone(), old_s.clone(), Self::division_poly(old_r.sub(old_s.multiply_poly(a.clone())), b.clone()).0)
+        old_s = old_s.div_scalar(old_r.get(old_r.deg()));
+
+        return (old_r.clone(), old_s.clone(), Self::division_poly(&old_r.sub(&old_s.multiply_poly(&a)), &b).0)
     }
 
-    pub fn invert_poly(poly1: Self, n: Self) -> Self {
+    pub fn invert_poly(poly1: &Self, n: &Self) -> Self {
         let mut t = Self::new();
         let mut newt = Self::from_vec(vec![(0, 1)]);
-        let mut r = n;
+        let mut r = n.clone();
         let mut newr = poly1.clone();
+
         while newr != Self::new() {
-            let (quotient,remainder) = Self::division_poly(r.clone(), newr.clone());
+            let (quotient,remainder) = Self::division_poly(&r, &newr);
             (r, newr) = (newr.clone(), remainder);
-            (t, newt) = (newt.clone(), t.sub(quotient.multiply_poly(newt.clone())));
+            (t, newt) = (newt.clone(), t.sub(&quotient.multiply_poly(&newt)));
         }
-        return t;
+        return t.div_scalar(r.get(r.deg()));
     }
 }
 
@@ -340,7 +405,7 @@ mod tests {
         p3.insert(1, -9);
         p3.insert(0, 3);
 
-        assert!(values_match(Ring::<Q, N>::multiply_poly_mod(p1, p2).get_all(), p3.get_all()))
+        assert!(values_match(Ring::<Q, N>::multiply_poly_mod(&p1, &p2).get_all(), p3.get_all()))
     }
 
     #[test]
@@ -354,24 +419,26 @@ mod tests {
         assert!(!values_match(p1.get_all(), p2.get_all()))
     }
 
-    // #[test]
-    // fn test_h_creation() {
-    //     const P: i64 = 3;
-    //     const Q: i64 = 31;
-    //     const N: i64 = 23;
+    #[test]
+    fn test_h_creation() {
+        const Q: i64 = 31;
+        const N: i64 = 23;
 
-    //     let f = Poly::<Q>::from_vec(vec![(18, 3), (9, -3), (8, 3), (4, -3), (2, -3), (0, 1)]);
-    //     let g = Poly::<Q>::from_vec(vec![(17, 3), (12, 3), (9, 3), (1, -3)]);
+        let f = Poly::<Q>::from_vec(vec![(18, 3), (9, -3), (8, 3), (4, -3), (2, -3), (0, 1)]);
+        let g = Poly::<Q>::from_vec(vec![(17, 3), (12, 3), (9, 3), (1, -3)]);
 
-    //     let h = Poly::<Q>::from_vec(vec![(22, -13), (21, -15), (19, 12), (18, -14), (16, 8), (15, -14), (14, -6),
-    //         (13, 14), (12, -3), (11, 7), (10, -5), (9, -14), (8, 3), (7, 10), (6, 5), (5, -8), (2, 4), (1, 1), (0, 8)]);
+        let invf = Poly::<Q>::from_vec(vec![(22, 14), (21, 22), (20, 23), (19, 27), (18, 11), (17, 18), (16, 22), (15, 12),
+            (14, 25), (13, 1), (12, 30), (11, 5), (10, 19), (9, 13), (8, 20), (7, 15), (6, 5), (5, 12), (4, 26), (3, 15), (2, 21),
+            (1, 4), (0, 27)]);
 
-    //     let result = Ring::<P,Q,N>::multiply_poly_mod(Ring::<P,Q,N>::invert_poly(f.clone(), Ring::<P, Q, N>::inv_poly()), g);
+        let invf2 = Poly::<Q>::invert_poly(&f, &Ring::<Q, N>::inv_poly());
 
-    //     // println!("inv: {}\n", Ring::<P,Q,N>::invert_poly(f.clone(), Ring::<P, Q, N>::inv_poly()));
+        assert!(values_match(invf.clone().values, invf2.values));
 
-    //     assert!(values_match(h.get_all(), result.get_all()))
-    // }
+        let result = Ring::<Q,N>::multiply_poly_mod(&invf, &g);
+
+        assert!(values_match(Ring::<Q,N>::multiply_poly_mod(&f, &result).get_all(), g.get_all()))
+    }
 
     #[test]
     fn test_mods() {
@@ -394,23 +461,53 @@ mod tests {
     #[test]
     fn test_ntru() {
         const P: i64 = 3;
-        const Q: i64 = 67;
+        const Q: i64 = 71;
         const N: i64 = 23;
 
         let mut ntru = NTRU::<P, Q, N>::new();
         ntru.generate_keys();
-        let m = Ring::<Q, N>::generate_n_poly();
+        let m = Poly::<Q>::from_vec(vec![(15, 1), (12, -1), (7, 1), (0, -1)]);
+        let r = Poly::<Q>::from_vec(vec![(19, 1), (10, 1), (6, 1), (2, -1)]);
 
-        let c = match ntru.encrypt(m.clone()) {
+        let c = match ntru.encrypt(&m, &r, &ntru.keys.pub_key) {
             Ok(c) => c,
             Err(error) => panic!("Error: {}", error)
         };
-        let mp = match ntru.decrypt(c) {
+
+        let mp = match ntru.decrypt(&c, &ntru.keys.priv_key) {
             Ok(mp) => mp,
             Err(error) => panic!("Error: {}", error)
         };
+        
+        assert!(values_match(m.values, mp.values));
+    }
 
-        print!("\nm: {}\nmp: {}\n", m, mp);
+    #[test]
+    fn test_ntru_pred() {
+        const P: i64 = 3;
+        const Q: i64 = 31;
+        const N: i64 = 23;
+
+        let ntru = NTRU::<P, Q, N>::new();
+
+        let f = Poly::<Q>::from_vec(vec![(18, 3), (9, -3), (8, 3), (4, -3), (2, -3), (0, 1)]);
+        let g = Poly::<Q>::from_vec(vec![(17, 3), (12, 3), (9, 3), (1, -3)]);
+
+        let invf = Poly::<Q>::invert_poly(&f, &Ring::<Q, N>::inv_poly());
+
+        let h = Ring::<Q, N>::multiply_poly_mod(&invf, &g);
+
+        let m = Poly::<Q>::from_vec(vec![(15, 1), (12, -1), (7, 1), (0, -1)]);
+        let r = Poly::<Q>::from_vec(vec![(19, 1), (10, 1), (6, 1), (2, -1)]);
+
+        let c = match ntru.encrypt(&m, &r, &h) {
+            Ok(c) => c,
+            Err(error) => panic!("Error: {}", error)
+        };
+        let mp = match ntru.decrypt(&c, &f) {
+            Ok(mp) => mp,
+            Err(error) => panic!("Error: {}", error)
+        };
         
         assert!(values_match(m.values, mp.values));
     }
@@ -423,9 +520,20 @@ mod tests {
         let b = Poly::<Q>::from_vec(vec![(18, 3), (9, -3), (8, 3), (4, -3), (2, -3), (0, 1)]);
         let a = Ring::<Q, N>::inv_poly();
 
-        let (r, s, t) = Poly::<Q>::extended_gcd(a.clone(), b.clone());
+        let (r, s, t) = Poly::<Q>::extended_poly_gcd(&a, &b);
 
-        println!("\nr: {}\ns: {}\na: {}\nt: {}\nb: {}\n s*a+t*b: {}", r, s, a, t,b, s.multiply_poly(a.clone()).add(t.multiply_poly(b.clone())));
+        println!("\nr: {}\ns: {}\na: {}\nt: {}\nb: {}\n s*a+t*b: {}", r, s, a.sub(&t), t,b, s.multiply_poly(&a).add(&t.multiply_poly(&b)));
+
+        let sa = Poly::<Q>::from_vec(vec![(17, 20), (16, 27), (15, 24), (14, 12), (13, 29), (12, 8), (11, 27), (10, 26),
+            (9, 18), (8, 8), (7, 27), (6, 19), (5, 17), (4, 6), (3, 3), (2, 2), (1, 4), (0, 26)]);
+        
+        let tb = Poly::<Q>::from_vec(vec![(22, 14), (21, 22), (20, 23), (19, 27), (18, 11), (17, 18), (16, 22), (15, 12),
+            (14, 25), (13, 1), (12, 30), (11, 5), (10, 19), (9, 13), (8, 20), (7, 15), (6, 5), (5, 12), (4, 26), (3, 15), (2, 21),
+            (1, 4), (0, 27)]);
+
+        assert!(values_match(s.get_all(), sa.get_all()));
+        assert!(values_match(t.get_all(), tb.get_all()));
+        println!("\ns: {}\na: {}\nt: {}\nb: {}\ns*a+t*b: {}\n", sa, &a, tb, &b, sa.multiply_poly(&a).add(&tb.multiply_poly(&b)));
     }
 
     #[test]
@@ -435,12 +543,17 @@ mod tests {
         let b = Poly::<Q>::from_vec(vec![(6, 1), (4, 1), (1, 1), (0, 1)]);
         let a = Poly::<Q>::from_vec(vec![(8, 1), (4, 1), (3, 1), (1, 1), (0, 1)]);
 
-        let (r, s, t) = Poly::<Q>::extended_gcd(a.clone(), b.clone());
+        let (_, _, t) = Poly::<Q>::extended_poly_gcd(&a, &b);
 
-        println!("\nr: {}\ns: {}\na: {}\nt: {}\nb: {}\n s*a+t*b: {}", r, s, a, t,b, s.multiply_poly(a.clone()).add(t.multiply_poly(b.clone())));
-
-        let inv = Poly::<Q>::invert_poly(b.clone(), a);
+        let inv = Poly::<Q>::invert_poly(&b, &a);
 
         assert!(values_match(inv.clone().values, t.values) && values_match(inv.values, Poly::<Q>::from_vec(vec![(7, 1), (6, 1), (3, 1), (1, 1)]).values))
+    }
+
+    #[test]
+    fn test_gcd() {
+        const Q:i64 = 64;
+
+        println!("{}", Poly::<Q>::gcd(-20, Q))
     }
 }
