@@ -296,10 +296,12 @@ impl <const Q: i64> Poly<Q> {
         let (inv, r) = Self::inverse_int(inv_coeff);
         // let c = Self::mods((inv*div_coeff) / Self::gcd(inv_coeff, Q));
         // println!("div_coeff: {}, c: {}", div_coeff, c);
-        if r != 1 {
-            println!("{} {}", r, div_coeff);
-            return (inv*div_coeff) * Self::inverse_int(r).0;
-        }
+        // println!("{} {}, {}", r, div_coeff, (inv*div_coeff) / r);
+        // if r != 1 {
+        //     let (invr, rr) = Self::inverse_int(r);
+        //     println!("{} {}, {} {}, {}", r, div_coeff, invr, rr, (inv*div_coeff) / r);
+        //     return (inv*div_coeff) * Self::inverse_int(r).0;
+        // }
         // let elapsed_time = now.elapsed();
         // println!("Running inverse_int() took {} seconds.", elapsed_time.as_nanos());
         // let now = Instant::now();
@@ -310,7 +312,7 @@ impl <const Q: i64> Poly<Q> {
         // let elapsed_time = now.elapsed();
         // println!("Running while took {} seconds.", elapsed_time.as_nanos());
         // println!("inv: {}, i: {}", inv, i);
-        return inv * div_coeff;
+        return (inv * div_coeff) / r;
         // return i * div_coeff;
     }
 
@@ -461,8 +463,8 @@ mod tests {
     #[test]
     fn test_ntru() {
         const P: i64 = 3;
-        const Q: i64 = 71;
-        const N: i64 = 23;
+        const Q: i64 = 257;
+        const N: i64 = 41;
 
         let mut ntru = NTRU::<P, Q, N>::new();
         ntru.generate_keys();
@@ -478,6 +480,8 @@ mod tests {
             Ok(mp) => mp,
             Err(error) => panic!("Error: {}", error)
         };
+
+        println!("m: {}\nc: {}\n", m, c);
         
         assert!(values_match(m.values, mp.values));
     }
