@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "apprit_ntru",
+    "apprit_communicator"
+]
